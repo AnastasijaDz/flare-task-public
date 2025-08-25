@@ -1,0 +1,32 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.vscode/
+
+# Ansible
+ansible/collections/
+ansible/inventory/hosts
+ansible/inventory/*.ini
+ansible/inventory/*.yml
+ansible/inventory/*.yaml
+*.retry
+.vault_pass
+ansible/.vault_pass
+*.vault
+ansible/**/*.vault
+
+# Ansible logs and cache
+ansible.log
+.ansible/
+ansible/.ansible_cache/
+
+# Terraform
+terraform/terraform.tfvars
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform.lock.hcl
+terraform/crash.log
+terraform/crash.*.log
+terraform/*.auto.tfvars

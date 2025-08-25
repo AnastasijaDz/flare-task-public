@@ -1,0 +1,290 @@
+- name: Setup go-flare observer node on Ubuntu VM
+  hosts: flare_nodes
+  become: yes
+  vars:
+    docker_user: "{{ ansible_user }}"
+    distroless_uid: 65532
+    
+  # pre-tasks to handle bastion setup for secure deployments
+  pre_tasks:
+    - name: Setup bastion host (secure deployment only)
+      when: 
+        - secure_deployment | default(false) | bool
+        - "'bastion' in groups"
+        - groups['bastion'] | length > 0
+      block:
+        - name: Ensure bastion can connect to VM
+          delegate_to: "{{ groups['bastion'][0] }}"
+          wait_for:
+            host: "{{ vm_internal_ip }}"
+            port: 22
+            timeout: 60
+          run_once: true
+          
+        - name: Test bastion SSH forwarding
+          delegate_to: "{{ groups['bastion'][0] }}"
+          command: ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {{ ansible_user }}@{{ vm_internal_ip }} echo "SSH via bastion works"
+          register: bastion_test
+          run_once: true
+          ignore_errors: yes
+          
+        - name: Display bastion connection status
+          debug:
+            msg: "Bastion SSH forwarding: {{ 'SUCCESS' if bastion_test.rc == 0 else 'FAILED' }}"
+          run_once: true
+    
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - wget
+          - jq
+          - ca-certificates
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Add Docker's official GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ docker_user }}"
+        groups: docker
+        append: yes
+
+    - name: Check if additional disk exists
+      stat:
+        path: "{{ disk_device }}"
+      register: disk_exists
+
+    - name: Fail if disk doesn't exist
+      fail:
+        msg: "Disk {{ disk_device }} not found. Please check the disk device path."
+      when: not disk_exists.stat.exists
+
+    - name: Check if disk is already formatted
+      command: blkid {{ disk_device }}
+      register: disk_formatted
+      failed_when: false
+      changed_when: false
+
+    - name: Create mount point directory
+      file:
+        path: "{{ mount_point }}"
+        state: directory
+        owner: "{{ docker_user }}"
+        group: "{{ docker_user }}"
+        mode: '0755'
+
+    - name: Format disk with EXT4 filesystem
+      filesystem:
+        fstype: ext4
+        dev: "{{ disk_device }}"
+        opts: "-m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard"
+      when: disk_formatted.rc != 0
+
+    - name: Get UUID of the formatted disk
+      command: blkid -o value -s UUID {{ disk_device }}
+      register: disk_uuid
+      changed_when: false
+
+    - name: Mount the disk
+      mount:
+        path: "{{ mount_point }}"
+        src: "UUID={{ disk_uuid.stdout }}"
+        fstype: ext4
+        opts: "discard,defaults"
+        state: mounted
+
+    - name: Create flare configuration directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ docker_user }}"
+        group: "{{ docker_user }}"
+        mode: '0755'
+      loop:
+        - "{{ flare_config_dir }}"
+        - "{{ flare_logs_dir }}"
+        - "{{ node_workspace }}"
+
+    - name: Create go-flare config.json
+      copy:
+        content: "{{ flare_config | to_nice_json }}"
+        dest: "{{ flare_config_dir }}/config.json"
+        owner: "{{ docker_user }}"
+        group: "{{ docker_user }}"
+        mode: '0644'
+
+    - name: Set ownership for distroless image (if enabled)
+      file:
+        path: "{{ item }}"
+        owner: "{{ distroless_uid }}"
+        group: "{{ distroless_uid }}"
+        recurse: yes
+      loop:
+        - "{{ mount_point }}"
+        - "{{ flare_config_dir }}"
+        - "{{ flare_logs_dir }}"
+      when: use_distroless
+
+    - name: Create docker-compose.yaml for standard image
+      copy:
+        content: |
+          services:
+            node:
+              container_name: coston2-node
+              image: flarefoundation/go-flare:{{ go_flare_version }}
+              restart: on-failure
+              environment:
+                - NETWORK_ID=costwo
+                - AUTOCONFIGURE_BOOTSTRAP=1
+                - AUTOCONFIGURE_PUBLIC_IP=1
+                - AUTOCONFIGURE_BOOTSTRAP_ENDPOINT=https://coston2.flare.network/ext/info
+              volumes:
+                - {{ mount_point }}:/app/db
+                - {{ flare_config_dir }}:/app/conf/C
+                - {{ flare_logs_dir }}:/app/logs
+              ports:
+                - 0.0.0.0:9650:9650
+                - 0.0.0.0:9651:9651
+        dest: "{{ node_workspace }}/docker-compose.yaml"
+        owner: "{{ docker_user }}"
+        group: "{{ docker_user }}"
+        mode: '0644'
+      when: not use_distroless
+
+    - name: Create docker-compose.yaml for distroless image
+      copy:
+        content: |
+          services:
+            node:
+              container_name: coston2-node
+              image: ghcr.io/flare-foundation/go-flare:{{ go_flare_version }}-dless
+              restart: on-failure
+              environment:
+                - NETWORK_ID=costwo
+                - AUTOCONFIGURE_BOOTSTRAP=1
+                - AUTOCONFIGURE_PUBLIC_IP=1
+                - AUTOCONFIGURE_BOOTSTRAP_ENDPOINT=https://coston2.flare.network/ext/info
+              volumes:
+                - {{ mount_point }}:/app/db
+                - {{ flare_config_dir }}:/app/conf/C
+                - {{ flare_logs_dir }}:/app/logs
+              ports:
+                - 0.0.0.0:9650:9650
+                - 0.0.0.0:9651:9651
+        dest: "{{ node_workspace }}/docker-compose.yaml"
+        owner: "{{ docker_user }}"
+        group: "{{ docker_user }}"
+        mode: '0644'
+      when: use_distroless
+
+    - name: Reset SSH connection to apply docker group membership
+      meta: reset_connection
+
+    - name: Start go-flare node with docker compose
+      command: docker compose up -d
+      args:
+        chdir: "{{ node_workspace }}"
+      become_user: "{{ docker_user }}"
+
+    - name: Wait for node to start
+      pause:
+        seconds: 30
+
+    - name: Check if container is running
+      command: docker ps --filter "name=coston2-node" --format "table {% raw %}{{.Names}}\t{{.Status}}{% endraw %}"
+      register: container_status
+      become_user: "{{ docker_user }}"
+
+    - name: Display container status
+      debug:
+        msg: "{{ container_status.stdout }}"
+
+    - name: Wait additional time for node initialization
+      pause:
+        seconds: 270
+        prompt: "Waiting 4.5 more minutes for node to fully initialize..."
+
+    - name: Check node health (bootstrapping may take time)
+      uri:
+        url: http://localhost:9650/ext/health
+        method: GET
+        status_code: [200, 503]  # accept both healthy and bootstrapping states
+      register: health_check
+      retries: 3
+      delay: 10
+
+    - name: Display health status
+      debug:
+        msg: |
+          Node health status: {{ health_check.json.healthy | default('unknown') }}
+          {% if not health_check.json.healthy | default(false) %}
+          Note: Node is still bootstrapping. This is normal and may take 10-30 minutes.
+          Bootstrap status: {{ health_check.json.checks.bootstrapped.error | default('checking...') }}
+          {% endif %}
+          Connected peers: {{ health_check.json.checks.network.message.connectedPeers | default('unknown') }}
+          Network connectivity: {{ (health_check.json.checks.network.message.percentConnected | default(0) * 100) | round(1) }}%
+
+    - name: Get recent container logs
+      command: docker logs --tail=50 coston2-node
+      register: container_logs
+      become_user: "{{ docker_user }}"
+
+    - name: Display recent logs
+      debug:
+        msg: "{{ container_logs.stdout }}"
+
+# optional tasks for cosign verification
+    - name: Install cosign (optional)
+      get_url:
+        url: "https://github.com/sigstore/cosign/releases/download/v2.2.1/cosign-linux-amd64"
+        dest: "/usr/local/bin/cosign"
+        mode: '0755'
+        owner: root
+        group: root
+      when: verify_image_signature | default(false)
+
+    - name: Verify Docker image signature with cosign (optional)
+      command: >
+        cosign verify --key https://raw.githubusercontent.com/flare-foundation/go-flare/main/cosign.pub
+        {{ 'ghcr.io/flare-foundation/go-flare:' + go_flare_version + '-dless' if use_distroless else 'flarefoundation/go-flare:' + go_flare_version }}
+      register: cosign_verification
+      become_user: "{{ docker_user }}"
+      when: verify_image_signature | default(false)
+
+    - name: Display cosign verification result
+      debug:
+        msg: "Image signature verification: {{ cosign_verification.stdout }}"
+      when: verify_image_signature | default(false)
