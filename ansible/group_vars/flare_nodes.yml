@@ -1,6 +1,3 @@
-# group_vars/flare_nodes.yml
----
-# Disk configuration - use the correct device path from Terraform
 disk_device: "/dev/disk/by-id/google-go-flare-data"
 mount_point: "/data/go-flare"
 
@@ -26,15 +23,12 @@ flare_config:
   staking-enabled: true
   staking-port: 9651
   state-sync-enabled: true
-  # Enable state sync for faster bootstrap
   snow-mixed-query-num-push-vdr: 10
   consensus-shutdown-timeout: "30s"
 
-# Optional features
 use_distroless: false
 verify_image_signature: false
 
-# Version and directories
 go_flare_version: "v1.11.0"
 flare_config_dir: "/opt/flare/conf"
 flare_logs_dir: "/opt/flare/logs"

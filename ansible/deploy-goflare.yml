@@ -146,7 +146,7 @@
         group: "{{ docker_user }}"
         mode: '0644'
 
-    - name: Set ownership for distroless image (if enabled)
+    - name: Set ownership for distroless image if enabled
       file:
         path: "{{ item }}"
         owner: "{{ distroless_uid }}"
@@ -251,7 +251,6 @@
         msg: |
           Node health status: {{ health_check.json.healthy | default('unknown') }}
           {% if not health_check.json.healthy | default(false) %}
-          Note: Node is still bootstrapping. This is normal and may take 10-30 minutes.
           Bootstrap status: {{ health_check.json.checks.bootstrapped.error | default('checking...') }}
           {% endif %}
           Connected peers: {{ health_check.json.checks.network.message.connectedPeers | default('unknown') }}
@@ -267,7 +266,7 @@
         msg: "{{ container_logs.stdout }}"
 
 # optional tasks for cosign verification
-    - name: Install cosign (optional)
+    - name: Install cosign
       get_url:
         url: "https://github.com/sigstore/cosign/releases/download/v2.2.1/cosign-linux-amd64"
         dest: "/usr/local/bin/cosign"
@@ -276,7 +275,7 @@
         group: root
       when: verify_image_signature | default(false)
 
-    - name: Verify Docker image signature with cosign (optional)
+    - name: Verify Docker image signature with cosign
       command: >
         cosign verify --key https://raw.githubusercontent.com/flare-foundation/go-flare/main/cosign.pub
         {{ 'ghcr.io/flare-foundation/go-flare:' + go_flare_version + '-dless' if use_distroless else 'flarefoundation/go-flare:' + go_flare_version }}

@@ -170,7 +170,7 @@ resource "google_compute_firewall" "allow_ssh_bastion" {
     ports    = ["22"]
   }
 
-  source_ranges = ["35.235.240.0/20"]
+  source_ranges = ["35.235.240.0/20"] // iap range
   target_tags   = ["bastion-host"]
   description   = "Allow SSH to bastion via IAP only"
 }
